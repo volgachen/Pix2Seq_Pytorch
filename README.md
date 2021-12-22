@@ -1,11 +1,11 @@
 # Pix2seq: A Language Modeling Framework for Object Detection
-We provide an unofficial re-implementation for [Pix2Seq](https://arxiv.org/abs/2109.10852v1). It is mainly developped based on [Pretrained-Pix2Seq](https://github.com/gaopengcuhk/Pretrained-Pix2Seq). Our target is to fully reproduce the accuracy provided in paper. With limited resource, we only try training with resolution $640\times640$, $200$ epochs as in ablation study.
+This is an unofficial re-implementation for [Pix2Seq](https://arxiv.org/abs/2109.10852v1). It is mainly developped based on [Pretrained-Pix2Seq](https://github.com/gaopengcuhk/Pretrained-Pix2Seq). Our target is to fully reproduce the accuracy provided in paper. With limited resource, we only try training with resolution $640\times640$, $200$ epochs as in ablation study.
 
 If you have any ideas, please feel free to let us know.
 
 There are two branches in this repo:
-- **Generate**: Version with only sequence generation.
-- [SeqAugment](): Version with sequence augmentation introduced in paper. (Not ready)
+- **Generate**: Simple version with only sequence generation.
+- [SeqAugment](): Fully implemented version with sequence augmentation introduced in paper. (Not ready)
 
 
 ## Installation
