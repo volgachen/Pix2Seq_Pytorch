@@ -5,7 +5,7 @@ If you have any ideas, please feel free to let us know.
 
 There are two branches in this repo:
 - **Generate**: Version with only sequence generation.
-- [SeqAugment](): Version with sequence augmentation introduced in paper.
+- [SeqAugment](): Version with sequence augmentation introduced in paper. (Not ready)
 
 
 ## Installation
@@ -41,7 +41,7 @@ ln -s /path/to/coco ./coco
 
 Training
 ```
-bash ./resnet50_pretrained.sh 8
+bash scripts/resnet50_pretrained.sh 8
 ```
 
 ## Evaluation
@@ -49,24 +49,24 @@ Nucleus search and bias for EOS are optional for evaluation.
 
 Vanilla evaluation
 ```
-bash ./resnet50_pretrained.sh 8 --eval --resume /path/to/checkpoint/file
+bash scripts/resnet50_pretrained.sh 8 --eval --resume /path/to/checkpoint/file
 ```
 
 Evaluation with nucleus search
 ```
-bash ./resnet50_pretrained.sh 8 --eval --resume /path/to/checkpoint/file --eval_p 0.4
+bash scripts/resnet50_pretrained.sh 8 --eval --resume /path/to/checkpoint/file --eval_p 0.4
 ```
 
 ### COCO 
 
 We provide AP
 
-| Branch     | backbone       | Input Size | Epoch | Batch Size | AP   | +nucleus  | Weights |
-| :-----:    | :------------: | :---------:| :----:| :---------:| :---:| :-------: | :-----: |
-| Generate   | R50-pretrained | 640        | 100   | 128        | 29.6 | 31.1      | [not ready]() | 
-| Generate   | R101-scratch   | 640        | 200   | 128        | 29.1 | 30.4      | [not ready]() | 
-| SeqAugment | R50-pretrained | 640        | 100   | 128        | ---- | ----      | [not ready]() | 
-| SeqAugment | R101-scratch   | 640        | 200   | 128        | ---- | ----      | [not ready]() | 
+| Branch     | backbone       | Input Size | Epoch | Batch Size | AP   | +nucleus  | Official | Weights |
+| :-----:    | :------------: | :---------:| :----:| :---------:| :---:| :-------: | :-------: | :-----: |
+| Generate   | R50-pretrained | 640        | 100   | 128        | 29.6 | 31.1      |          | [Weight](https://drive.google.com/file/d/1xwNS6yTQjuG_rqr491RfS8privjG3Tlk/view?usp=sharing) | 
+| Generate   | R101-scratch   | 640        | 200   | 128        | 29.1 | 30.4      | (35+)    | [Weight](https://drive.google.com/file/d/1uVK1AOFYlHX2vxtczEE7WeKxevCLH8xa/view?usp=sharing) | 
+| SeqAugment | R50-pretrained | 640        | 100   | 128        | ---- | ----      |          | []() | 
+| SeqAugment | R101-scratch   | 640        | 200   | 128        | ---- | ----      | (38+)    | []() | 
 
 # Acknowledegement
 
