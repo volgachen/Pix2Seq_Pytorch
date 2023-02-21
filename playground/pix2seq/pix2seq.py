@@ -32,8 +32,8 @@ class Pix2Seq(nn.Module):
         self.num_classes = num_classes
         self.num_bins = num_bins
         self.input_proj = nn.Sequential(
-            nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=(1, 1)),
-            nn.GroupNorm(32, hidden_dim))
+            nn.Linear(backbone.num_channels, hidden_dim),
+            nn.LayerNorm(hidden_dim))
         self.backbone = backbone
 
     def forward(self, image_tensor, input_seq=None):
@@ -54,6 +54,7 @@ class Pix2Seq(nn.Module):
 
         src, mask = features[-1].decompose()
         assert mask is not None
+        src = src.flatten(2).permute(2, 0, 1)
         mask = torch.zeros_like(mask).bool()
 
         src = self.input_proj(src)
@@ -180,6 +181,95 @@ class SetCriterion(nn.Module):
         return losses
 
 
+BASE_VOCAB_SHIFT = 100
+
+def seq_to_bbox(seq, quantization_bins, seq_format='xyxy_name'):
+    """Returns [0, 1] normalized yxyx bbox from token sequence."""
+    # [batch, 5*num_instances]
+    assert seq.dim() == 2, seq.shape.as_list()
+    # [batch, num_instances, 1]
+    if seq_format.startswith('name'):
+        ymin = seq[:, 1::5, None]
+        xmin = seq[:, 2::5, None]
+        ymax = seq[:, 3::5, None]
+        xmax = seq[:, 4::5, None]
+    else:
+        ymin = seq[:, 0::5, None]
+        xmin = seq[:, 1::5, None]
+        ymax = seq[:, 2::5, None]
+        xmax = seq[:, 3::5, None]
+    if seq_format in ['name_cxcywh', 'cxcywh_name']:
+        ycnt, xcnt, ysize, xsize = ymin, xmin, ymax, xmax
+        ymin = ycnt - ysize//2
+        xmin = xcnt - xsize//2
+        ymax = ycnt + ysize//2
+        xmax = xcnt + xsize//2
+    quantized_box = torch.cat([xmin, ymin, xmax, ymax], -1)
+    # TODO: dequantize
+    quantized_box = quantized_box / (quantization_bins - 1)
+    return quantized_box.clamp(min=0., max=1.)
+
+def decode_object_seq_to_bbox(logits,
+                              pred_seq,
+                              quantization_bins,
+                              coord_vocab_shift):
+    """Decode objects (label & bbox) for seq from `build_response_seq_from_bbox`.
+    Assume yxyxc format with truncation at the end for any uneven extra tokens.
+        Replace class tokens with argmax instead of sampling.
+    Args:
+        logits: `float` output logits in shape of (bsz, max_seq_len, vocab_size).
+        pred_seq: `int` pred sequence in shape of (bsz, max_seq_len).
+        quantization_bins: `int` for bins.
+        coord_vocab_shift: `int`, shifting coordinates by a specified integer.
+    Returns:
+        pred_class: `int` of shape (bsz, max_instances_per_image).
+        pred_bbox: `float` of shape (bsz, max_instances_per_image, 4).
+        pred_score: `float` of shape (bsz, max_instances_per_image).
+    """
+    bs, seqlen, vocab_size = logits.shape
+    if seqlen % 5 != 0:  # truncate out the last few tokens.
+        pred_seq = pred_seq[..., :-(seqlen % 5)]
+        logits = logits[..., :-(seqlen % 5), :]
+    pred_class_p = logits.softmax(dim=-1)[:, 4::5]  # (bsz, instances, vocab_size)
+    mask_s1 = [0.] * BASE_VOCAB_SHIFT  # reserved.
+    mask_s2 = [1.] * (coord_vocab_shift - BASE_VOCAB_SHIFT)  # labels.
+    mask_s3 = [0] * (vocab_size - coord_vocab_shift)  # coordinates and others.
+    mask = torch.as_tensor(mask_s1 + mask_s2 + mask_s3, device=pred_class_p.device)
+    pred_class = (pred_class_p * mask).argmax(-1, keepdim=True)
+    pred_score = pred_class_p.gather(-1, pred_class).squeeze(-1)
+    # pred_score = tf.reduce_sum(
+    #     pred_class_p * tf.one_hot(pred_class, vocab_size), -1)
+    pred_class = (pred_class.squeeze(-1) - BASE_VOCAB_SHIFT).clamp(min=0)
+    pred_bbox = seq_to_bbox(pred_seq - coord_vocab_shift, quantization_bins)
+    return pred_class, pred_bbox, pred_score
+
+
+def scale_points(points, scale):
+    """Scales points.
+    Args:
+        points: Tensor with shape [num_points * 2], [batch, num_points * 2] or
+        [batch, instances, num_points * 2] where points are organized in
+        (y, x) format.
+        scale: Tensor with shape [2] or [batch, 2].
+    Returns:
+        Tensor with same shape as points.
+    """
+    points_orig = points
+    orig_shape = points.shape
+    coords_len = points.shape[-1]
+    if points.dim() == 1:
+        points = points.reshape(coords_len // 2, 2)
+    elif points.dim() == 2:
+        points = points.reshape(-1, coords_len // 2, 2)
+    else:
+        points = points.reshape(-1, orig_shape[1], coords_len // 2, 2)
+        scale = scale.unsqueeze(-2)
+    points = points * scale
+    points = points.reshape(orig_shape)
+    # points = preserve_reserved_tokens(points, points_orig)
+    return points
+
+
 class PostProcess(nn.Module):
     """ This module converts the model's output into the format expected by the coco api"""
     def __init__(self, num_classes, args):
@@ -189,10 +279,7 @@ class PostProcess(nn.Module):
         self.max_input_size = args.max_input_size
 
     def forward(self, outputs, targets):
-        if 'pred_seq' in outputs:
-            return self.forward_tokens(outputs, targets)
-        else:
-            return self.forward_logits(outputs, targets)
+        return self.forward_tokens(outputs, targets)
 
     @torch.no_grad()
     def forward_tokens(self, outputs, targets):
@@ -204,40 +291,34 @@ class PostProcess(nn.Module):
             #               For evaluation, this must be the original image size (before any data augmentation)
             #               For visualization, this should be the image size after data augment, but before padding
         """
-        origin_img_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
-        input_img_sizes = torch.stack([t["size"] for t in targets], dim=0)
-        out_seq_prob = outputs['pred_seq_logits']
-        out_seq = outputs['pred_seq']
+        image_ids = torch.cat([t["image_id"] for t in targets], dim=0)
+        orig_image_size = torch.stack([t["orig_size"] for t in targets], dim=0)
+        unpadded_image_size = torch.stack([t["size"] for t in targets], dim=0)
 
-        assert len(out_seq_prob) == len(origin_img_sizes)
+        # Decode sequence output.
+        # TODO: add parameters
+        quantization_bins, coord_vocab_shift = 1000, 1000
+        pred_classes, pred_bboxes, scores = decode_object_seq_to_bbox(
+            outputs["pred_seq_logits"], outputs["pred_seq"], quantization_bins, coord_vocab_shift)
 
-        # and from relative [0, 1] to absolute [0, height] coordinates
-        ori_img_h, ori_img_w = origin_img_sizes.unbind(1)
-        inp_img_h, inp_img_w = input_img_sizes.unbind(1)
-        scale_fct = torch.stack(
-            [ori_img_w / inp_img_w, ori_img_h / inp_img_h,
-             ori_img_w / inp_img_w, ori_img_h / inp_img_h], dim=1).unsqueeze(1)
+        # Compute coordinate scaling from [0., 1.] to actual pixels in orig image.
+        image_size = torch.as_tensor([self.max_input_size, self.max_input_size], device=orig_image_size.device)
+        if self.training:
+            # scale points to whole image size during train.
+            scale = utils.tf_float32(image_size)
+        else:
+            # scale points to original image size during eval.
+            scale = image_size / unpadded_image_size
+            scale = scale * orig_image_size
+            scale = scale[:, None]
+        pred_bboxes_rescaled = scale_points(pred_bboxes, scale)
 
         results = []
-        for b_i, (pred_seq, pred_seq_prob) in enumerate(zip(out_seq, out_seq_prob)):
-            pred_seq = pred_seq.view(-1, 5)
-            pred_seq_prob = pred_seq_prob.view(-1, 5)
-            num_objects = pred_seq.shape[0]
-            is_eos = pred_seq[:, 0] == self.num_bins + self.num_classes + 1
-            if is_eos.any():
-                count_items = torch.nonzero(is_eos).min()
-                if count_items == 0:
-                    results.append(dict())
-                    continue
-                pred_seq = pred_seq[:count_items, :]
-            boxes_per_image = pred_seq[:, :4] * self.max_input_size / self.num_bins
-            boxes_per_image = boxes_per_image * scale_fct[b_i]
-            labels_per_image = pred_seq[:, 4] - self.num_bins - 1
-            scores_per_image = pred_seq_prob[:, 4]
+        for icls, ibox, iscore in zip(pred_classes, pred_bboxes_rescaled, scores):
             result = dict()
-            result['scores'] = scores_per_image
-            result['labels'] = labels_per_image
-            result['boxes'] = boxes_per_image
+            result['scores'] = iscore
+            result['labels'] = icls
+            result['boxes'] = ibox
             results.append(result)
 
         return results

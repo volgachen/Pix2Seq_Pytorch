@@ -1,11 +1,7 @@
 # Pix2seq: A Language Modeling Framework for Object Detection
-This is an unofficial re-implementation for [Pix2Seq](https://arxiv.org/abs/2109.10852v1). It is mainly developped based on [Pretrained-Pix2Seq](https://github.com/gaopengcuhk/Pretrained-Pix2Seq). Our target is to fully reproduce the accuracy provided in paper. With limited resource, we only try training with resolution $640\times640$, $200$ epochs as in ablation study.
+This is an unofficial re-implementation for [Pix2Seq](https://arxiv.org/abs/2109.10852v1). It is mainly developped based on [Pretrained-Pix2Seq](https://github.com/gaopengcuhk/Pretrained-Pix2Seq) and [Pix2Seq](https://github.com/google-research/pix2seq).
 
 If you have any ideas, please feel free to let us know.
-
-There are two branches in this repo:
-- **Generate**: Simple version with only sequence generation.
-- [SeqAugment](): Fully implemented version with sequence augmentation introduced in paper. (Not ready)
 
 
 ## Installation
@@ -32,42 +28,34 @@ path/to/coco/
   val2017/      # val images
 ```
 
-## Training
-
-First, link coco dataset to the project folder
+Please link coco dataset to the project folder
 ```
 ln -s /path/to/coco ./coco 
 ```
 
-Training
-```
-bash scripts/resnet50_pretrained.sh 8
-```
+## Training
+
+*Not Ready.*
 
 ## Evaluation
-Nucleus search and bias for EOS are optional for evaluation.
+`top_k` and `top_p` are tunable parameters for evaluation.
 
-Vanilla evaluation
 ```
 bash scripts/resnet50_pretrained.sh 8 --eval --resume /path/to/checkpoint/file
-```
-
-Evaluation with nucleus search
-```
-bash scripts/resnet50_pretrained.sh 8 --eval --resume /path/to/checkpoint/file --eval_p 0.4
 ```
 
 ### COCO 
 
 We provide AP
 
-| Branch     | backbone       | Input Size | Epoch | Batch Size | AP   | +nucleus  | Official | Weights |
-| :-----:    | :------------: | :---------:| :----:| :---------:| :---:| :-------: | :-------: | :-----: |
-| Generate   | R50-pretrained | 640        | 100   | 128        | 29.6 | 31.1      |          | [Weight](https://drive.google.com/file/d/1xwNS6yTQjuG_rqr491RfS8privjG3Tlk/view?usp=sharing) | 
-| Generate   | R101-scratch   | 640        | 200   | 128        | 29.1 | 30.4      | (35+)    | [Weight](https://drive.google.com/file/d/1uVK1AOFYlHX2vxtczEE7WeKxevCLH8xa/view?usp=sharing) | 
-| SeqAugment | R50-pretrained | 640        | 100   | 128        | ---- | ----      |          | []() | 
-| SeqAugment | R101-scratch   | 640        | 200   | 128        | ---- | ----      | (38+)    | []() | 
+| Backbone       | Input Size | Epoch | Batch Size | AP   | Weights | Comments  |
+| :------------: | :---------:| :----:| :---------:| :---:| :-----: | :-------: |
+| R50            | 640        | -     | -          | 39.3 | [Weight](https://drive.google.com/file/d/1ykR5QMVrW0yGSmrs9cpWI5LrxXECX0Ox/view?usp=sharing) | [Official](https://console.cloud.google.com/storage/browser/pix2seq/coco_det_finetune/resnet_640x640) |
+
+### Official Model
+
+Convert the official model with `scripts/convert_official.py`.
 
 # Acknowledegement
 
-This repo borrows a lot from [Pretrained-Pix2Seq](https://github.com/gaopengcuhk/Pretrained-Pix2Seq) and [DETR](https://github.com/facebookresearch/detr). Thanks a lot!
+This repo borrows a lot from [Pix2Seq](https://github.com/google-research/pix2seq), [Pretrained-Pix2Seq](https://github.com/gaopengcuhk/Pretrained-Pix2Seq) and [DETR](https://github.com/facebookresearch/detr). Thanks a lot!

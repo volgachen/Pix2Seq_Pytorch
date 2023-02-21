@@ -201,7 +201,7 @@ def make_coco_transforms(image_set, args):
         if args.color_distortion:
             transforms.append(T.RandomDistortion(0.5, 0.5, 0.5, 0.5))
         transforms.extend([
-            normalize,
+            T.FixPaddingNormalize(args.max_input_size),
             T.TargetPermute(),
             T.SeqBuilder(args),
         ])
@@ -212,7 +212,7 @@ def make_coco_transforms(image_set, args):
         if args.large_scale_jitter:
             return T.Compose([
                 T.LargeScaleJitter(output_size=args.max_input_size, aug_scale_min=1.0, aug_scale_max=1.0),
-                normalize,
+                T.FixPaddingNormalize(args.max_input_size),
             ])
         else:
             return T.Compose([

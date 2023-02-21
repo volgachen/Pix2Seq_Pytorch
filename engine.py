@@ -101,6 +101,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
                              **loss_dict_reduced_unscaled)'''
 
         # orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
+        postprocessors['bbox'].eval() # TODO: I am not sure what it stands for.
         results = postprocessors['bbox'](outputs, targets)
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
         if coco_evaluator is not None:

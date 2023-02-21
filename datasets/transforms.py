@@ -437,6 +437,17 @@ class RandomDistortion(object):
             return img, target
 
 
+class FixPaddingNormalize(object):
+    def __init__(self, output_size=1333, bg_default = 0.3):
+        self.max_size = output_size
+
+    def __call__(self, img, target):
+        img = F.to_tensor(img)
+        out_img = torch.zeros((3, self.max_size, self.max_size), device=img.device, dtype=img.dtype) + 0.3
+        out_img[:, :img.shape[1], :img.shape[2]] = img
+        return out_img, target
+
+
 class TargetPermute(object):
     def __init__(self) -> None:
         super().__init__()

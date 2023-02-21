@@ -80,6 +80,20 @@ class BackboneBase(nn.Module):
         return out
 
 
+from timm.models.layers.pool2d_same import MaxPool2dSame
+def convert_same_padding(module):
+    module_output = module
+    if isinstance(module, torch.nn.MaxPool2d):
+        module_output = MaxPool2dSame(kernel_size=module.kernel_size,
+                                      stride=module.stride,
+                                      dilation=module.dilation,
+                                      ceil_mode=module.ceil_mode)
+    for name, child in module.named_children():
+        module_output.add_module(name, convert_same_padding(child))
+    del module
+    return module_output
+
+
 class Backbone(BackboneBase):
     """ResNet backbone with frozen BatchNorm."""
     def __init__(self, name: str,
@@ -90,6 +104,7 @@ class Backbone(BackboneBase):
         backbone = getattr(torchvision.models, name)(
             replace_stride_with_dilation=[False, False, args.dilation],
             pretrained=is_main_process() and args.pretrained, norm_layer=norm_func)
+        backbone = convert_same_padding(backbone)
         num_channels = 512 if name in ('resnet18', 'resnet34') else 2048
         super().__init__(backbone, train_backbone, num_channels, return_interm_layers)
 

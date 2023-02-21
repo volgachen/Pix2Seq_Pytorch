@@ -11,7 +11,7 @@ class Attention(nn.Module):
 
         self.qkv = nn.Linear(dim, dim * 3)
         self.attn_drop = nn.Dropout(dropout)
-        self.proj = nn.Linear(dim, dim)
+        self.out_proj = nn.Linear(dim, dim)
 
     def forward(self, x, pre_kv=None, attn_mask=None):
         N, B, C = x.shape
@@ -32,5 +32,5 @@ class Attention(nn.Module):
         attn = self.attn_drop(attn)
 
         x = (attn @ v).permute(2, 0, 1, 3).reshape(N, B, C)
-        x = self.proj(x)
+        x = self.out_proj(x)
         return x, pre_kv

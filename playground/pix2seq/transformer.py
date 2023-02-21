@@ -20,41 +20,41 @@ class Transformer(nn.Module):
 
     def __init__(self, d_model=512, nhead=8, num_encoder_layers=6,
                  num_decoder_layers=6, dim_feedforward=1024, dropout=0.1, drop_path=0.1,
-                 activation="relu", normalize_before=False, args=None):
+                 activation="gelu", normalize_before=False, args=None):
                  # num_vocal=2094, max_objects=100, pred_eos=False, return_intermediate_dec=False, query_pos=False, drop_cls=0.):
         super().__init__()
 
         encoder_layer = TransformerEncoderLayer(
             d_model, nhead, dim_feedforward, dropout, drop_path, activation, normalize_before)
-        encoder_norm = nn.LayerNorm(d_model) if normalize_before else None
+        encoder_norm = nn.LayerNorm(d_model, eps=1e-6) if normalize_before else None
         self.encoder = TransformerEncoder(encoder_layer, num_encoder_layers, encoder_norm)
+        self.encoder_proj = nn.Linear(d_model, d_model)
+        self.encoder_proj_ln = nn.LayerNorm(d_model, eps=1e-6)
+
+        self.encoder_mlp_ln = nn.LayerNorm(d_model, eps=1e-6)
+        self.encoder_mlp_linear1 = nn.Linear(d_model, dim_feedforward)
+        self.encoder_mlp_linear2 = nn.Linear(dim_feedforward, d_model)
 
         decoder_layer = TransformerDecoderLayer(
             d_model, nhead, dim_feedforward, dropout, drop_path, activation, normalize_before)
-        decoder_norm = nn.LayerNorm(d_model)
+        decoder_norm = nn.LayerNorm(d_model, eps=1e-6)
         self.decoder = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm, return_intermediate=args.return_intermediate_dec)
         self._reset_parameters()
 
-        self.num_vocal = args.dictionary.num_vocal
-        if args.classifier_norm:
-            self.classifier_norm = nn.LayerNorm(d_model)
-        else:
-            self.classifier_norm = None
-        self.vocal_classifier = nn.Linear(d_model, self.num_vocal)
-        self.det_embed = nn.Embedding(1, d_model)
-        self.vocal_embed = nn.Embedding(self.num_vocal - 2, d_model)
-        self.num_bins = args.num_bins
+        # TODO: add parameters
+        self.vocab_embed = nn.Embedding(3000, d_model)
+        self.vocab_bias = nn.Parameter(torch.zeros(3000))
+        self.query_pos_embed = nn.Parameter(torch.zeros(512, d_model))
 
         self.d_model = d_model
         self.nhead = nhead
         self.num_decoder_layers = num_decoder_layers
 
-        self.max_objects = args.max_objects
-        # zychen: for query_pos
-        if args.query_pos:
-            self.query_pos = nn.Embedding(self.max_objects * 5 + 1, d_model)
-        else:
-            self.query_pos = None
+        # zychen: for sampling
+        self.top_k = args.top_k
+        self.top_p = args.top_p
+        self.temperature = args.temperature
+
         # zychen: for drop_cls
         self.drop_cls = args.drop_cls
         self.eval_p = args.eval_p
@@ -76,17 +76,22 @@ class Transformer(nn.Module):
             pos_embed: shape[B, C, H, W]
         """
         # flatten NxCxHxW to HWxNxC
-        bs = src.shape[0]
-        src = src.flatten(2).permute(2, 0, 1)
+        bs = src.shape[1]
         mask = mask.flatten(1)
-        pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
-        query_pos = self.query_pos.weight.unsqueeze(1).repeat(1, bs, 1) if self.query_pos is not None else None
 
-        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+        pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
+        src = src + pos_embed
+        memory = self.encoder(src, src_key_padding_mask=None, pos=None)
+        memory = self.encoder_proj_ln(self.encoder_proj(memory))
+        # linear1/2
+        memory = memory + pos_embed
+        memory = memory + self.encoder_mlp_linear2(F.gelu(self.encoder_mlp_linear1(self.encoder_mlp_ln(memory))))
+        query_pos = self.query_pos_embed.unsqueeze(1).repeat(1, bs, 1)
         pre_kv = [torch.as_tensor([[], []], device=memory.device)
                   for _ in range(self.num_decoder_layers)]
 
         if self.training:
+            # TODO: not implemented
             input_embed = torch.cat(
                 [self.det_embed.weight.unsqueeze(0).repeat(bs, 1, 1),
                  self.vocal_embed(input_seq)], dim=1)
@@ -105,43 +110,34 @@ class Transformer(nn.Module):
                 pre_kv_list=pre_kv,
                 self_attn_mask=self_attn_mask,
                 query_pos=query_pos)
-            if self.classifier_norm is not None:
-                hs = self.classifier_norm(hs)
             pred_seq_logits = self.vocal_classifier(hs.transpose(1, 2))
             return pred_seq_logits
         else:
             end = torch.zeros(bs).bool().to(memory.device)
             end_lens = torch.zeros(bs).long().to(memory.device)
-            input_embed = self.det_embed.weight.unsqueeze(0).repeat(bs, 1, 1).transpose(0, 1)
-            result_probs, result_tokens = [], []
-            for seq_i in range(self.max_objects * 5):
-                query_pos = self.query_pos.weight[seq_i].view(1,1,-1).repeat(1,bs,1) if self.query_pos is not None else None
+            input_embed = self.vocab_embed(torch.as_tensor([[10]]).to(memory.device)).repeat(1,bs,1)
+            result_logits, result_tokens = [], []
+            for step in range(500):
+                query_pos = self.query_pos_embed[step].view(1,1,-1).repeat(1,bs,1)
                 hs, pre_kv = self.decoder(
-                    input_embed,
+                    input_embed + query_pos,
                     memory,
-                    memory_key_padding_mask=mask,
-                    pos=pos_embed,
+                    memory_key_padding_mask=None,
+                    pos=None,
                     pre_kv_list=pre_kv,
-                    query_pos=query_pos)
-                if self.classifier_norm is not None:
-                    hs = self.classifier_norm(hs)
-                similarity = self.vocal_classifier(hs[-1])
+                    query_pos=None) # 1, 1, bs, c
+                next_logits = hs[-1, -1] @ self.vocab_embed.weight.transpose(0, 1) + self.vocab_bias # 1, bs, 3000
 
-                valid = torch.ones((self.num_vocal - 1,), device=memory.device, dtype=torch.bool)
-                if seq_i % 5 == 4:
-                    valid[:501] = False
-                else:
-                    valid[501:592] = False
-                if seq_i % 5 > 0:
-                    valid[592] = False
-                similarity[:, :, self.num_vocal-2] += self.eos_bias
-                pred_token, pred_prob = NucleusSearch(similarity[-1, :, :self.num_vocal - 1], p=self.eval_p, valid=valid.unsqueeze(0).repeat(bs, 1))
+                # default sample
+                sampling_logits = next_logits / self.temperature
+                sampling_logits = top_logits(sampling_logits, k=self.top_k, p=self.top_p)
+                # next_token = torch.distributions.categorical.Categorical(logits=sampling_logits).sample()
+                next_token = torch.multinomial(sampling_logits.softmax(-1), 1)[:, 0]
 
-                result_tokens.append(pred_token)
-                result_probs.append(pred_prob)
-                input_embed = self.vocal_embed(pred_token.clamp(max=self.num_bins+91).view(1, -1))
-
-            return torch.stack(result_probs, dim=1), torch.stack(result_tokens, dim=1)
+                result_tokens.append(next_token)
+                result_logits.append(next_logits)
+                input_embed = self.vocab_embed(next_token.unsqueeze(0))
+            return torch.stack(result_logits, dim=1), torch.stack(result_tokens, dim=1)
 
 
 class TransformerEncoder(nn.Module):
@@ -212,8 +208,8 @@ class TransformerEncoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
 
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
+        self.norm1 = nn.LayerNorm(d_model, eps=1e-6)
+        self.norm2 = nn.LayerNorm(d_model, eps=1e-6)
         self.dropout1 = DropPath(drop_path, batch_dim=1) if drop_path > 0. else nn.Identity()
         self.dropout2 = DropPath(drop_path, batch_dim=1) if drop_path > 0. else nn.Identity()
 
@@ -268,9 +264,9 @@ class TransformerDecoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
 
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.norm3 = nn.LayerNorm(d_model)
+        self.norm1 = nn.LayerNorm(d_model, eps=1e-6)
+        self.norm2 = nn.LayerNorm(d_model, eps=1e-6)
+        self.norm3 = nn.LayerNorm(d_model, eps=1e-6)
         self.dropout1 = DropPath(dropout, batch_dim=1) if drop_path > 0. else nn.Identity()
         self.dropout2 = DropPath(dropout, batch_dim=1) if drop_path > 0. else nn.Identity()
         self.dropout3 = DropPath(dropout, batch_dim=1) if drop_path > 0. else nn.Identity()
@@ -348,21 +344,6 @@ class TransformerDecoderLayer(nn.Module):
         return self.forward_post(tgt, memory, memory_key_padding_mask, pos, self_attn_mask, pre_kv, query_pos=query_pos)
 
 
-class MLP(nn.Module):
-    """ Very simple multi-layer perceptron (also called FFN)"""
-
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
-        super().__init__()
-        self.num_layers = num_layers
-        h = [hidden_dim] * (num_layers - 1)
-        self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
-
-    def forward(self, x):
-        for i, layer in enumerate(self.layers):
-            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
-        return x
-
-
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
@@ -425,32 +406,32 @@ class DropPath(nn.Module):
         return drop_path(x, self.drop_prob, self.training, self.batch_dim)
 
 
-def NucleusSearch(logits, p=None, m=None, temp=None, valid=None):
+def top_logits(logits: torch.Tensor,
+               k: int = 0,
+               p: float = 1.0,
+               mask: float = -1e10) -> torch.Tensor:
+    """Remove low probability logits via masking.
+    Args:
+        logits: class logits in shape of (batch size, total_classes).
+        k: specifying top k largest logits to keep.
+        p: specifying a probability for finding a minimum set of largest
+        logits to keep, where their cumulative probability is no less than p
+        (actually in the following version, it is "...cumulative probability is
+        the largest but no more than p").
+        mask: an value that's used to replace logits that don't satisfy the
+        keep conditions.
+    Returns:
+        logits where low probability ones are replaced with mask.
     """
-    logits: bs * V
-    """
-    if valid is not None:
-        logits[~valid] = float("-inf")
-    if temp is not None:
-        samp_probs = F.softmax(logits.div_(temp), dim=-1)
-    else:
-        samp_probs = F.softmax(logits, dim=-1)
-    if valid is not None:
-        samp_probs[~valid] = 0.
-
-    if p is not None:
-        sorted_probs, sorted_indices = torch.sort(samp_probs, descending=True)
-        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-        sorted_indices_to_remove = cumulative_probs > p
-        sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
-        sorted_indices_to_remove[:, 0] = 0
-        sorted_samp_probs = sorted_probs.clone()
-        sorted_samp_probs[sorted_indices_to_remove] = 0
-        if m is not None:
-            sorted_samp_probs.div_(sorted_samp_probs.sum(1).unsqueeze(1))
-            sorted_samp_probs.mul_(1-m)
-            sorted_samp_probs.add_(sorted_probs.mul(m))
-        sorted_next_indices = sorted_samp_probs.multinomial(1).view(-1, 1)
-        next_tokens = sorted_indices.gather(1, sorted_next_indices)
-        next_probs  = sorted_probs.gather(1, sorted_next_indices)
-    return next_tokens, next_probs
+    mask = torch.ones_like(logits) * mask
+    if k > 0:
+        min_logits = logits.topk(k=k, dim=-1)[0][..., -1:]
+        logits = torch.where(logits < min_logits, mask, logits)
+    if p < 1.:
+        sorted_logits = logits.sort(-1, descending=True).values
+        cum_probs = torch.cumsum(sorted_logits.softmax(-1), -1)
+        min_logits = - torch.max(
+            torch.where(cum_probs <= p, -sorted_logits, mask), -1, keepdim=True).values
+        min_logits = torch.minimum(min_logits, sorted_logits[:, :1])
+        logits = torch.where(logits < min_logits, mask, logits)
+    return logits

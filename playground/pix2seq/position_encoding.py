@@ -76,26 +76,18 @@ class PositionEmbeddingLearned(nn.Module):
         return pos
 
 
+from .pos_pix2seq import get_2d_position_codes
 class PositionEmbeddingLearnedMine(nn.Module):
     """
     Absolute pos embedding, learned.
     """
     def __init__(self, args):
         super().__init__()
-        if args.max_input_size == 1333:
-            h, w = (84,84) if args.dilation else (42, 42)
-        elif args.max_input_size == 640:
-            h, w = (40,40) if args.dilation else (20, 20)
-        self.pos_embed = nn.Parameter(torch.zeros(1, args.hidden_dim, h, w))
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        nn.init.uniform_(self.pos_embed)
+        pos_emb = get_2d_position_codes(20, 20, 256).permute(0, 3, 1, 2)
+        self.register_buffer("pos_emb", pos_emb)
 
     def forward(self, tensor_list: NestedTensor):
-        x = tensor_list.tensors
-        n, c, h, w = x.shape
-        return self.pos_embed[:, :, :h, :w].repeat(n, 1, 1, 1)
+        return self.pos_emb.repeat(tensor_list.tensors.shape[0], 1, 1, 1)
 
 
 def build_position_encoding(args):
